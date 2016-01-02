@@ -5,7 +5,7 @@
            [ber BERUnit]
            [java.util Date])
   (:require
-    [seweg.coders.ber :refer :all]
+    [clojure.network.snmp.coders.ber :refer :all]
     [clojure.set :refer (difference map-invert)]
     [clojure.math.numeric-tower :refer (expt)]))
 
@@ -109,5 +109,5 @@
 (defn snmp-decode [#^bytes v]
   (let [u (BERUnit. v)
         t (get (map-invert snmp-headers) (.header u))
-        nv ((ns-resolve 'seweg.coders.snmp (symbol (get snmp-decodings t))) (.value u))]
+        nv ((ns-resolve 'clojure.network.snmp.coders.snmp (symbol (get snmp-decodings t))) (.value u))]
     {:type t :value nv}))

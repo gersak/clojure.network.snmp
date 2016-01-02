@@ -5,6 +5,11 @@
     [java.util Date]
     [java.lang Exception]))
 
+
+(defprotocol SNMPChannel
+  (encode [this data])
+  (decode [this data]))
+
 (def snmp-version {:v1 0
                    :v2c 1
                    :v3 3})
@@ -66,7 +71,7 @@
     :value [{:type :Integer :value rid}
             {:type :Integer :value (or (:error-type options) 0)}
             {:type :Integer :value (or (:error-index options) 0)}
-            {:type :sequence :value (get-oids-map oids)}]});
+            {:type :sequence :value (get-oids-map oids)}]})
 
 (defn get-bulk-pdu
   [^Integer rid oids & options]
@@ -78,17 +83,6 @@
            {:type :Integer :value (or (:max-repetitions options) 300)}
            {:type :sequence :value (get-oids-map oids)}]})
 
-(def pdu-function {:get-request get-request-pdu
-                   :get-next-request get-next-request-pdu
-                   :get-bulk-request get-bulk-pdu})
-
-;; Composition
-
-(defn compose-snmp-packet [{:keys [version community pdu]}]
-  {:type :sequence
-   :value [{:type :Integer :value version}
-           {:type :OctetString :value community}
-           pdu]})
 
 (defn decompose-snmp-response [snmp-packet-tree]
   (let [version (-> snmp-packet-tree :value first :value)
@@ -101,6 +95,5 @@
            :error-type (get error-type (-> pdu :value (nth 1) :value))
            :error-index (-> pdu :value (nth 2) :value)
            :variable-bindings (-> pdu :value (nth 3) :value)}}))
-
 
 (load "protocol/utils")
