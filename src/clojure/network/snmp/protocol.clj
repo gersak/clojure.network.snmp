@@ -1,6 +1,7 @@
 (ns clojure.network.snmp.protocol
   (:require
-    [clojure.set :refer (map-invert)])
+    [clojure.set :refer (map-invert)]
+    [clojure.network.snmp.coders.snmp :refer [snmp-encode snmp-decode]])
   (:import
     [java.util Date]
     [java.lang Exception]))
@@ -67,11 +68,11 @@
   [^Integer rid oids & options]
   "Available options are :error-type and :error-index.
   oids argument should be vector of OID values."
-   {:type :get-next-request
-    :value [{:type :Integer :value rid}
-            {:type :Integer :value (or (:error-type options) 0)}
-            {:type :Integer :value (or (:error-index options) 0)}
-            {:type :sequence :value (get-oids-map oids)}]})
+  {:type :get-next-request
+   :value [{:type :Integer :value rid}
+           {:type :Integer :value (or (:error-type options) 0)}
+           {:type :Integer :value (or (:error-index options) 0)}
+           {:type :sequence :value (get-oids-map oids)}]})
 
 (defn get-bulk-pdu
   [^Integer rid oids & options]
@@ -84,16 +85,11 @@
            {:type :sequence :value (get-oids-map oids)}]})
 
 
-(defn decompose-snmp-response [snmp-packet-tree]
-  (let [version (-> snmp-packet-tree :value first :value)
-        community (-> snmp-packet-tree :value second :value)
-        pdu (-> snmp-packet-tree :value (nth 2))]
-    {:version version
-     :community community
-     :pdu {:type (:type pdu)
-           :rid (-> pdu :value first :value)
-           :error-type (get error-type (-> pdu :value (nth 1) :value))
-           :error-index (-> pdu :value (nth 2) :value)
-           :variable-bindings (-> pdu :value (nth 3) :value)}}))
+
+(defrecord VariableBinding [oid value])
+
+(defmethod print-method VariableBinding [record writter]
+  (.write writter
+          (str (:oid record) " ::= " (:value record))))
 
 (load "protocol/utils")

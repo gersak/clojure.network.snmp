@@ -21,27 +21,16 @@
                     (every? string? (:value x)) (apply str  (interpose "."  (map #(apply str %) (partition 2 (:value x)))))
                     (= :noSuchInstance (:type x)) :noSuchInstance
                     :else (:value x)))]
-    (for [x (map #(:value %) variable-bindings)] {(:value (first x)) (hf (second x))})))
-
-(defn get-variable-bindings [response]
-  (-> response :message decompose-snmp-response :pdu :variable-bindings vb2data))
-
-(defn get-rid [response]
-  (-> response :message decompose-snmp-response :pdu :rid))
+    (for [x (map #(:value %) variable-bindings)] (VariableBinding. (:value (first x)) (hf (second x))))))
 
 ;; Following are functions for easier request interchange
 
-(def rid-range [10000 500000])
-
-(defn generate-request-id [] (+ 10000 (rand-int 400000)))
-
-(defn set-request-id [packet rid]
-  (update packet :value
-          #(update % 0 {:type :Integer :value rid})))
-
-(defn get-request-id [packet rid]
-  (-> packet :value first :value))
-
+(defn generate-request-id
+  ([] (generate-request-id nil))
+  ([used-ids] (if used-ids
+                (loop [rid (+ 10000 (rand-int 400000))]
+                  (if (contains? used-ids rid) (recur (+ 10000 (rand-int 400000)))
+                    rid)))))
 
 (defmulti bind-request-type (fn [{:keys [pdu-type]}] pdu-type))
 
@@ -74,6 +63,7 @@
 
   Options are:
   :pdu-type [:get-bulk-request :get-request :get-next-request]
+  :community \"public\"
   :version [:v1 :v2c :v3]
   :port \"any\""
   open-line-resolver)
@@ -83,28 +73,80 @@
   (throw (Exception. (str "Unknown SNMP version: " version))))
 
 
-(defmethod open-line :v1 [{:keys [host community pdu-type version port] :as options}]
+(defmethod open-line :v1 [{:keys [community pdu-type port version] :as options}]
   (let [pdu-type (or pdu-type :get-bulk-request)
-        version (or version :v2c)
-        port (or port 161)]
-    (fn [& {:keys [rid oids] :or {rid (generate-request-id)}}]
-      {:message {:type :sequence
-                 :value [{:type :Integer :value 0}
-                         {:type :OctetString :value community}
-                         ((bind-request-type options) rid oids)]}
-       :host host
-       :port port})))
+        port (or port 161)
+        sent-requests_ (atom #{})]
+    (assert (#{:snmp-get-request :set-request :trap :response} pdu-type) (str "SNMPv1 doesn't support PDU type: " pdu-type))
+    (reify
+      SNMPChannel
+      (encode [_ {:keys [rid oids] :or {rid (generate-request-id @sent-requests_)}}]
+        (do
+          (if (@sent-requests_ rid)
+            (throw (Exception. (str "packet with RID: " rid " already exists and is still pending.")))
+            (swap! sent-requests_ conj rid))
+          (snmp-encode
+            {:type :sequence
+             :value [{:type :Integer :value 0}
+                     {:type :OctetString :value community}
+                     ((bind-request-type options) rid oids)]})))
+      (decode [_ received-bytes]
+        (when-not (nil? received-bytes)
+          (let [snmp-packet-tree (snmp-decode received-bytes)
+                pdu-type (-> snmp-packet-tree :value (nth 2))
+                version_ (-> snmp-packet-tree :value first :value)
+                community_ (-> snmp-packet-tree :value second :value)
+                pdu (-> snmp-packet-tree :value (nth 2))
+                rid (-> pdu :value first :value)
+                error-index (-> pdu :value (nth 2) :value)
+                error-type (get error-type (-> pdu :value (nth 1) :value))
+                variable-bindings (-> pdu :value (nth 3) :value)]
+            (assert error-index (str "Error received: " error-type))
+            (assert (= 0 version_) (str "Received response with different version."))
+            (assert (= community community_) (str "Received response with different community."))
+            (if-not (@sent-requests_ rid)
+              (throw (Exception. (str "received packet with RID: " rid " that was not sent to host from this channel.")))
+              (do
+                (swap! sent-requests_ disj rid)
+                (filter :oid (vb2data variable-bindings))))))))))
 
-(defmethod open-line :v2c [{:keys [host community pdu-type port] :as options}]
+
+
+(defmethod open-line :v2c [{:keys [community pdu-type port version] :as options}]
   (let [pdu-type (or pdu-type :get-bulk-request)
-        port (or port 161)]
-    (fn [& {:keys [rid oids] :or {rid (generate-request-id)}}]
-      {:message {:type :sequence
-                 :value [{:type :Integer :value 1}
-                         {:type :OctetString :value community}
-                         ((bind-request-type options) rid oids)]}
-       :host host
-       :port port})))
+        port (or port 161)
+        sent-requests_ (atom #{})]
+    (reify
+      SNMPChannel
+      (encode [_ {:keys [rid oids] :or {rid (generate-request-id @sent-requests_)}}]
+        (if (@sent-requests_ rid)
+            (throw (Exception. (str "packet with RID: " rid " already exists and is still pending.")))
+            (swap! sent-requests_ conj rid))
+        (snmp-encode
+            (hash-map
+              :type :sequence
+              :value [{:type :Integer :value 1}
+                      {:type :OctetString :value community}
+                      ((bind-request-type options) rid oids)])))
+      (decode [_ received-bytes]
+        (when-not (nil? received-bytes)
+          (let [snmp-packet-tree (snmp-decode received-bytes)
+                pdu-type (-> snmp-packet-tree :value (nth 2))
+                version_ (-> snmp-packet-tree :value first :value)
+                community_ (-> snmp-packet-tree :value second :value)
+                pdu (-> snmp-packet-tree :value (nth 2))
+                rid (-> pdu :value first :value)
+                error-index (-> pdu :value (nth 2) :value)
+                error-type (get error-type (-> pdu :value (nth 1) :value))
+                variable-bindings (-> pdu :value (nth 3) :value)]
+            (assert error-index (str "Error received: " error-type))
+            (assert (= 1 version_) (str "Received response with different version."))
+            (assert (= community community_) (str "Received response with different community."))
+            (if-not (@sent-requests_ rid)
+              (throw (Exception. (str "received packet with RID: " rid " that was not sent to host from this channel.")))
+              (do
+                (swap! sent-requests_ disj rid)
+                (filter :oid (vb2data variable-bindings))))))))))
 
 (defmethod open-line :v3 [{:keys [host community port pdu-type
                                   message-max-size
@@ -114,7 +156,7 @@
                                   message-security-parameters
                                   context-engine-id context-name]
                            :or {port 161
-                                version}
+                                version 3}
                            :as options}]
   (let [{:keys [message-authoritive-engine-id
                 message-authoritive-engine-boots

@@ -3,14 +3,9 @@
     [clojure.core.async :as a :refer [go <!! <! go-loop take! put! alts!! chan]]
     [clojure.network.snmp
      [protocol :as s :refer [is-child-of-oid?
-                             decompose-snmp-response
                              open-line
-                             get-variable-bindings
-                             #_snmp-template
-                             #_get-new-rid
                              generate-request-id
-                             make-table]]]
-    [clojure.network.snmp.coders.snmp :refer [snmp-encode snmp-decode]])
+                             make-table]]])
   (:import
     [java.net
      SocketTimeoutException
@@ -48,15 +43,14 @@
     (.receive client rp)
     {:host (.getHostAddress (.getAddress rp))
      :port (.getPort rp)
-     :message (snmp-decode (.getData rp))}))
+     :message (.getData rp)}))
 
 (defn- process-udp [{:keys [message host port timeout]
                       :as prepared-packet
                       :or {port 161 timeout *timeout*}}]
   (when-let [client (make-udp-socket :timeout timeout)]
     (try
-      (let [byte-seq (snmp-encode message)
-            packet (generate-udp-packet byte-seq host)]
+      (let [packet (generate-udp-packet message host)]
         (send-sync client packet))
       (catch SocketTimeoutException e nil)
       (catch Exception e (do
@@ -69,146 +63,190 @@
 
 ;; Usable functions
 
-(defn poke [host community & {:keys [timeout oids]
-                              :or {timeout *timeout*
-                                   oids [[1 3 6 1 2 1 1 1 0]]}}]
-  (let [l (open-line host community :pdu-type :get-request)]
-    (-> (l :rid (generate-request-id) :oids oids) process-udp get-variable-bindings)))
+(defn snmp-get [& {:keys [host community timeout oids port version]
+                   :or {timeout *timeout*
+                        port 161
+                        host "localhost"
+                        community "public"
+                        version :v2c
+                        oids [[1 3 6 1 2 1 1 1 0]]}
+                   :as options}]
+  (let [line (open-line (assoc options
+                               :pdu-type :get-request
+                               :community community
+                               :version version
+                               :port port))
+        {host_ :host response :message} (process-udp {:host host
+                                                      :timeout timeout
+                                                      :message (s/encode line {:oids oids})
+                                                      :port port})]
+    (s/decode line response)))
+
+
+(defn snmp-get-next [& {:keys [host community timeout oids port version]
+                        :or {timeout *timeout*
+                             port 161
+                             host "localhost"
+                             community "public"
+                             version :v2c
+                             oids [[1 3 6 1 2 1 1 1 0]]}
+                        :as options}]
+  (let [line (open-line (assoc options
+                               :pdu-type :get-next-request
+                               :community community
+                               :version version
+                               :port port))
+        {host_ :host response :message} (process-udp {:host host
+                                                      :community community
+                                                      :timeout timeout
+                                                      :message (s/encode line {:oids oids})
+                                                      :port port})]
+    (s/decode line response)))
+
+(defn snmp-bulk-get [& {:keys [host community timeout oids port version]
+                        :or {timeout *timeout*
+                             port 161
+                             host "localhost"
+                             community "public"
+                             version :v2c
+                             oids [[1 3 6 1 2 1 1 1]]}
+                        :as options}]
+  (let [line (open-line (assoc options
+                               :pdu-type :get-bulk-request
+                               :community community
+                               :version version
+                               :port port))
+        {host_ :host response :message} (process-udp {:host host
+                                                      :community community
+                                                      :timeout timeout
+                                                      :message (s/encode line {:oids oids})
+                                                      :port port})]
+    (s/decode line response)))
 
 
 
-(defn snmp-get [version host community & oids]
-  (let [oids (vec oids)
-        get-fn (open-line host community :pdu-type :get-request :version version)]
-    (-> (get-fn :oids oids) process-udp get-variable-bindings)))
-
-(defn snmp-get-next [version host community & oids]
-  (let [oids (vec oids)
-        get-fn (open-line host community :pdu-type :get-next-request :version version)]
-    (-> (get-fn :oids oids) process-udp get-variable-bindings)))
-
-(defn snmp-get-first
-  "Returns first valid found value of oids input
-  argumetns."
-  ([version host community & oids]
-   (when-let [client (make-udp-socket)]
-     (let [oids (vec oids)
-           get-fn (open-line host community :pdu-type :get-next-request :version version)
-           transmition-fn (fn [oids]
-                            (let [ld (get-fn :oids oids)
-                                  p (generate-udp-packet (snmp-encode (:message ld)) host)]
-                              (get-variable-bindings (send-sync client p))))
-           valid-oids (fn [results oids]
-                        (let [get-key #(apply key %)]
-                          (remove nil?
-                                  (set (for [r results ok oids :let [rk (get-key r)]]
-                                         (let [c (dec (min (count rk) (count ok)))]
-                                           (if (= (take c rk) (take c ok)) r)))))))
-           checkfn (fn [x]
-                     (let [v (apply val x)]
-                       (cond
-                         (coll? v) (seq v)
-                         (string? v) (boolean (seq v))
-                         :else (boolean v))))]
-       (try
-         (let [vb-initial (transmition-fn oids)]
-           (loop [vb (filter checkfn vb-initial)
-                  not-found (remove checkfn vb-initial)]
-             (when (some (comp not nil?) vb)
-               (if (empty? not-found)
-                 (sort-by #(apply key %) (valid-oids vb oids))
-                 (let [new-vb (transmition-fn (map #(apply key %) not-found))
-                       found-vb (filter checkfn new-vb)
-                       empty-vb (valid-oids (remove checkfn new-vb) oids)]
-                   (recur (into vb found-vb) empty-vb))))))
-         (catch Exception e nil)
-         (finally (.close client)))))))
+#_(defn snmp-get-first
+    "Returns first valid found value of oids input
+    argumetns."
+    ([version host community & oids]
+     (when-let [client (make-udp-socket)]
+       (let [oids (vec oids)
+             get-fn (open-line host community :pdu-type :get-next-request :version version)
+             transmition-fn (fn [oids]
+                              (let [ld (get-fn :oids oids)
+                                    p (generate-udp-packet (snmp-encode (:message ld)) host)]
+                                (get-variable-bindings (send-sync client p))))
+             valid-oids (fn [results oids]
+                          (let [get-key #(apply key %)]
+                            (remove nil?
+                                    (set (for [r results ok oids :let [rk (get-key r)]]
+                                           (let [c (dec (min (count rk) (count ok)))]
+                                             (if (= (take c rk) (take c ok)) r)))))))
+             checkfn (fn [x]
+                       (let [v (apply val x)]
+                         (cond
+                           (coll? v) (seq v)
+                           (string? v) (boolean (seq v))
+                           :else (boolean v))))]
+         (try
+           (let [vb-initial (transmition-fn oids)]
+             (loop [vb (filter checkfn vb-initial)
+                    not-found (remove checkfn vb-initial)]
+               (when (some (comp not nil?) vb)
+                 (if (empty? not-found)
+                   (sort-by #(apply key %) (valid-oids vb oids))
+                   (let [new-vb (transmition-fn (map #(apply key %) not-found))
+                         found-vb (filter checkfn new-vb)
+                         empty-vb (valid-oids (remove checkfn new-vb) oids)]
+                     (recur (into vb found-vb) empty-vb))))))
+           (catch Exception e nil)
+           (finally (.close client)))))))
 
 
-(defn snmp-bulk-get [version host community & oids]
+#_(defn snmp-bulk-get [version host community & oids]
   (let [oids (vec oids)
         get-fn (open-line {:host host :community community :pdu-type :get-bulk-request :version version})]
     (-> (get-fn :oids oids) process-udp get-variable-bindings)))
 
 
 ;; Walking functions
-(defn snmp-bulk-walk
-  "Function tries to walk OID tree as far as response
-  contains input oid value. If it fails or times out
-  function will return nil. Input OIDs accepts vector
-  of OID values. Either as keywords or vectors.
+#_(defn snmp-bulk-walk
+    "Function tries to walk OID tree as far as response
+    contains input oid value. If it fails or times out
+    function will return nil. Input OIDs accepts vector
+    of OID values. Either as keywords or vectors.
 
-  Default timeout is 2s. "
-  ([host community oids] (snmp-bulk-walk host community oids 2000))
-  ([host community oids timeout]
-   (when-let [c (make-udp-socket :timeout timeout)]
-     (try
-       (let [bulk-fn (open-line {:host host
-                                 :community community
-                                 :version :v2c
-                                 :pdu-type :get-bulk-request})]
-         (letfn [(valid-vb? [vb]
-                   (let [vb-oid (-> vb first key)]
-                     (some #(is-child-of-oid? vb-oid %) oids)))
-                 (send-fn [oid]
-                   (.send c (generate-udp-packet (snmp-encode
-                                                   (:message
-                                                     (bulk-fn :oids [oid]))) host)))
-                 (receive-fn []
-                   (let [p (generate-blank-packet)]
-                     (.receive c p)
-                     {:host (.getHostAddress (.getAddress p))
-                      :port (.getPort p)
-                      :message (snmp-decode (.getData p))}))]
-           (doseq [x oids] (send-fn x))
-           (loop [r []]
-             (let [p (receive-fn)
-                   vb (get-variable-bindings p)
-                   last-oid (-> vb last keys first)]
-               (if (valid-vb? (last vb))
-                 (do
-                   (send-fn last-oid)
-                   (recur (into r (filter valid-vb? vb))))
-                 (into r (filter valid-vb? vb)))))))
-       #_(catch Exception e )
-       (catch Exception e (.printStackTrace e))
+    Default timeout is 2s. "
+    ([host community oids] (snmp-bulk-walk host community oids 2000))
+    ([host community oids timeout]
+     (when-let [c (make-udp-socket :timeout timeout)]
+       (try
+         (let [bulk-fn (open-line {:host host
+                                   :community community
+                                   :version :v2c
+                                   :pdu-type :get-bulk-request})]
+           (letfn [(valid-vb? [vb]
+                     (let [vb-oid (-> vb first key)]
+                       (some #(is-child-of-oid? vb-oid %) oids)))
+                   (send-fn [oid]
+                     (.send c (generate-udp-packet (snmp-encode
+                                                     (:message
+                                                       (bulk-fn :oids [oid]))) host)))
+                   (receive-fn []
+                     (let [p (generate-blank-packet)]
+                       (.receive c p)
+                       {:host (.getHostAddress (.getAddress p))
+                        :port (.getPort p)
+                        :message (snmp-decode (.getData p))}))]
+             (doseq [x oids] (send-fn x))
+             (loop [r []]
+               (let [p (receive-fn)
+                     vb (get-variable-bindings p)
+                     last-oid (-> vb last keys first)]
+                 (if (valid-vb? (last vb))
+                   (do
+                     (send-fn last-oid)
+                     (recur (into r (filter valid-vb? vb))))
+                   (into r (filter valid-vb? vb)))))))
+         #_(catch Exception e )
+         (catch Exception e (.printStackTrace e))
        (finally (.close c))))))
 
 
-(defn snmp-walk
-  ([host community oids] (snmp-walk host community oids 2000))
-  ([host community oids timeout]
-   (with-open [c (make-udp-socket :timeout timeout)]
-     (try
-       (let [next-fn (open-line {:host host
-                                 :version :v2c
-                                 :community community
-                                 :pdu-type :get-next-request})]
-         (letfn [(valid-vb? [vb]
-                   (let [vb-oid (-> vb first key)]
-                     (some #(is-child-of-oid? vb-oid %) oids)))
-                 (send-fn [oid]
-                   (.send c (generate-udp-packet (snmp-encode
-                                                   (:message
-                                                     (next-fn :oids [oid]))) host)))
-                 (receive-fn []
-                   (let [p (generate-blank-packet)]
-                     (.receive c p)
-                     {:host (.getHostAddress (.getAddress p))
-                      :port (.getPort p)
-                      :message (snmp-decode (.getData p))}))]
-           (doseq [x oids] (send-fn x))
-           (loop [r []]
-             (let [p (receive-fn)
-                   vb (get-variable-bindings p)
-                   last-oid (-> vb last keys first)]
-               (if (valid-vb? (last vb))
-                 (do
-                   (send-fn last-oid)
-                   (recur (into r (filter valid-vb? vb))))
-                 (into r (filter valid-vb? vb)))))))
-       (catch java.net.SocketTimeoutException e nil)
-       (catch Exception e (.printStackTrace e))))))
+#_(defn snmp-walk
+    ([host community oids] (snmp-walk host community oids 2000))
+    ([host community oids timeout]
+     (with-open [c (make-udp-socket :timeout timeout)]
+       (try
+         (let [next-fn (open-line {:host host
+                                   :version :v2c
+                                   :community community
+                                   :pdu-type :get-next-request})]
+           (letfn [(valid-vb? [vb]
+                     (let [vb-oid (-> vb first key)]
+                       (some #(is-child-of-oid? vb-oid %) oids)))
+                   (send-fn [oid]
+                     (.send c (generate-udp-packet (snmp-encode
+                                                     (:message
+                                                       (next-fn :oids [oid]))) host)))
+                   (receive-fn []
+                     (let [p (generate-blank-packet)]
+                       (.receive c p)
+                       {:host (.getHostAddress (.getAddress p))
+                        :port (.getPort p)
+                        :message (snmp-decode (.getData p))}))]
+             (doseq [x oids] (send-fn x))
+             (loop [r []]
+               (let [p (receive-fn)
+                     vb (get-variable-bindings p)
+                     last-oid (-> vb last keys first)]
+                 (if (valid-vb? (last vb))
+                   (do
+                     (send-fn last-oid)
+                     (recur (into r (filter valid-vb? vb))))
+                   (into r (filter valid-vb? vb)))))))
+         (catch java.net.SocketTimeoutException e nil)
+         (catch Exception e (.printStackTrace e))))))
 
 #_(defn shout
   "Function \"shouts\" oids to collection of hosts. It openes one
