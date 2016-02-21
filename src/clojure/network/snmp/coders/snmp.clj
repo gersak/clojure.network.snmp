@@ -6,8 +6,7 @@
            [java.util Date])
   (:require
     [clojure.network.snmp.coders.ber :refer :all]
-    [clojure.set :refer (difference map-invert)]
-    [clojure.math.numeric-tower :refer (expt)]))
+    [clojure.set :refer (difference map-invert)]))
 
 (def snmp-pdu-type
   {:get-request -96
@@ -40,7 +39,7 @@
 
 (declare snmp-construct-decode snmp-construct-encode)
 
-(def ber-hi-limit (expt 2 32))
+(def ber-hi-limit (reduce * (repeat 32 2)))
 
 ;; Here are defined functions that encode SNMP values to their byte value
 (def snmp-encodings

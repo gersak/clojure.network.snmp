@@ -5,6 +5,9 @@
     [java.util Date]
     [java.lang Exception]))
 
+;; Arhitecture is based on RFC 3412
+;; http://www.ietf.org/rfc/rfc3412.txt?number=3412
+
 
 (defprotocol SNMPChannel
   (encode [this data])
@@ -83,8 +86,15 @@
            {:type :Integer :value (or (:max-repetitions options) 300)}
            {:type :sequence :value (get-oids-map oids)}]})
 
+(defn decompose-resolver [snmp-packet-tree]
+  (-> snmp-packet-tree :value first :value))
 
-(defn decompose-snmp-response [snmp-packet-tree]
+(defmulti decompose-snmp-response decompose-resolver)
+
+(defmethod decompose-snmp-response :default [_]
+  (throw (Exception. "Unknown SNMP packet receivied")))
+
+(defmethod decompose-snmp-response 0 [snmp-packet-tree]
   (let [version (-> snmp-packet-tree :value first :value)
         community (-> snmp-packet-tree :value second :value)
         pdu (-> snmp-packet-tree :value (nth 2))]
@@ -96,4 +106,27 @@
            :error-index (-> pdu :value (nth 2) :value)
            :variable-bindings (-> pdu :value (nth 3) :value)}}))
 
+(defmethod decompose-snmp-response 1 [snmp-packet-tree]
+  (let [version (-> snmp-packet-tree :value first :value)
+        community (-> snmp-packet-tree :value second :value)
+        pdu (-> snmp-packet-tree :value (nth 2))]
+    {:version version
+     :community community
+     :pdu {:type (:type pdu)
+           :rid (-> pdu :value first :value)
+           :error-type (get error-type (-> pdu :value (nth 1) :value))
+           :error-index (-> pdu :value (nth 2) :value)
+           :variable-bindings (-> pdu :value (nth 3) :value)}}))
+
+(defmethod decompose-snmp-response 3 [snmp-packet-tree]
+  (let [version (-> snmp-packet-tree :value first :value)]
+    {:version version
+     :community community
+     :pdu {:type (:type pdu)
+           :rid (-> pdu :value first :value)
+           :error-type (get error-type (-> pdu :value (nth 1) :value))
+           :error-index (-> pdu :value (nth 2) :value)
+           :variable-bindings (-> pdu :value (nth 3) :value)}}))
+
 (load "protocol/utils")
+(load "protocol/message_processing")
