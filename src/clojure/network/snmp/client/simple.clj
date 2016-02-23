@@ -2,15 +2,25 @@
   (:require
     [clojure.core.async :as a :refer [go <!! <! go-loop take! put! alts!! chan]]
     [clojure.network.snmp.protocol
-     :as s :refer [is-child-of-oid?
+     :as s :refer [RIDStoreProtocol
+                   SNMPSocketProtocol
+                   create-rid
+                   verify-rid
+                   pending-rids
+                   is-child-of-oid?
                    decompose-snmp-response
                    open-line
                    get-variable-bindings
-                   #_snmp-template
-                   #_get-new-rid
+                   snmp-encode
+                   snmp-decode
+                   close
+                   closed?
+                   get-host
+                   get-port
+                   send-over-line
                    generate-request-id
                    make-table]]
-    [clojure.network.snmp.coders.snmp :refer [snmp-encode snmp-decode]])
+    [clojure.network.snmp.coders.snmp :refer [BERCoder]])
   (:import
     [java.net
      SocketTimeoutException
@@ -44,60 +54,131 @@
   ([^bytes byte-seq ^String host port]
    (DatagramPacket. byte-seq (count byte-seq) (InetAddress/getByName host) port)))
 
-
 (defn- generate-blank-packet
   ([] (generate-blank-packet *receive-packet-size*))
   ([size] (DatagramPacket. (byte-array size) (int size))))
 
-(defn- send-sync [#^DatagramSocket client ^DatagramPacket packet]
-  (let [rp (generate-blank-packet)]
-    (.send client packet)
-    (.receive client rp)
-    {:host (.getHostAddress (.getAddress rp))
-     :port (.getPort rp)
-     :message (snmp-decode (.getData rp))}))
+(defn open-snmp-socket
+  [& {:keys [host port timeout encoder]
+      :or {host "localhost"
+           port 161
+           timeout 2000
+           encoder BERCoder}}]
+  (let [socket (doto (DatagramSocket.) (.setSoTimeout timeout) (.setBroadcast false))]
+    (reify
+      SNMPSocketProtocol
+      (closed? [_] (.isClosed socket))
+      (close [_] (.close socket))
+      (get-host [_] host)
+      (get-port [_] port)
+      (send-over-line [this snmp-message]
+        (if (closed? this)
+          (throw (SocketException. " Socket has been closed.")))
+        (try
+          (let [byte-message (generate-udp-packet
+                               (snmp-encode encoder snmp-message)
+                               host
+                               port)
+                rp (generate-blank-packet)]
+            (.send socket byte-message)
+            (.receive socket rp)
+            (.getData rp)
+            (snmp-decode encoder (.getData rp)))
+          (catch SocketTimeoutException e nil)
+          (catch SocketException e nil)
+          (catch Exception e (do
+                               (println "input: " snmp-message)
+                               (.printStackTrace e))))))))
 
-(defn- process-udp [{:keys [message host port timeout]
+#_(defn- process-udp [{:keys [message host port timeout]}
                       :as prepared-packet
-                      :or {port 161 timeout *timeout*}}]
-  (when-let [client (make-udp-socket :timeout timeout)]
-    (try
-      (let [byte-seq (snmp-encode message)
-            packet (generate-udp-packet byte-seq host)]
-        (send-sync client packet))
-      (catch SocketTimeoutException e nil)
-      (catch Exception e (do
-                           (println "input: " prepared-packet)
-                           (.printStackTrace e)))
-      (finally (.close client)))))
+                      :or {port 161 timeout *timeout*}]
+    (when-let [client (make-udp-socket :timeout timeout)]
+      (try
+        (let [byte-seq (snmp-encode BERCoder message)
+              packet (generate-udp-packet byte-seq host)]
+          (send-sync client packet))
+        (catch SocketTimeoutException e nil)
+        (catch Exception e (do
+                             (println "input: " prepared-packet)
+                             (.printStackTrace e)))
+        (finally (.close client)))))
 
 
 
 
 ;; Usable functions
-
 (defn poke [host community & {:keys [timeout oids]
                               :or {timeout *timeout*
                                    oids [[1 3 6 1 2 1 1 1 0]]}}]
-  (let [l (open-line {:host host
+  (let [socket (open-snmp-socket :host host)
+        l (open-line {:host host
                       :community community
                       :pdu-type :get-request
                       :version :v2c})]
-    (-> (l :rid (generate-request-id) :oids oids) process-udp get-variable-bindings)))
+    (-> (l :rid (generate-request-id) :oids oids))))
+    ;(try
+    ;  (-> (l :rid (generate-request-id) :oids oids) ((partial send-over-line socket)))
+    ;  (finally (close socket))))
 
 
+(defn make-simple-rid-store []
+  (let [rids (atom #{})]
+    (reify
+      RIDStoreProtocol
+      (create-rid [_] (let [rid (first (drop-while @rids (repeatedly (partial rand-int 100000))))]
+                        (swap! rids conj rid)
+                        rid))
+      (verify-rid [_ rid] (if (@rids rid)
+                            (do
+                              (swap! rids disj rid)
+                              true)
+                            false))
+      (pending-rids [_] @rids))))
 
-(defn snmp-get [version host community & oids]
-  (let [oids (vec oids)
-        get-fn (open-line host community :pdu-type :get-request :version version)]
-    (-> (get-fn :oids oids) process-udp get-variable-bindings)))
+(defn make-mapped-rid-store
+  "Function returns reified RIDStore in form of
+  hash-map where keys are RIDs and vals are sent
+  SNMP requests."
+  []
+  (let [rids (atom {})]
+    (reify
+      RIDStoreProtocol
+      (create-rid [_ req] (let [rid (first (drop-while @rids (repeatedly (partial rand-int 100000))))]
+                            (swap! rids assoc rid req)
+                            rid))
+      (verify-rid [_ rid]
+        (if (contains? @rids rid)
+          (do
+            (swap! rids dissoc rid)
+            true)
+          false))
+      (verify-rid [_ rid req]
+        (if (= req (get @rids rid))
+          (do
+            (swap! rids dissoc rid)
+            true)
+          false))
+      (pending-rids [_] @rids))))
 
-(defn snmp-get-next [version host community & oids]
-  (let [oids (vec oids)
-        get-fn (open-line host community :pdu-type :get-next-request :version version)]
-    (-> (get-fn :oids oids) process-udp get-variable-bindings)))
 
-(defn snmp-get-first
+;
+;(defn snmp-get [version host community & oids]
+;  (let [oids (vec oids)
+;        get-fn (open-line host community :pdu-type :get-request :version version)]
+;    (-> (get-fn :oids oids) process-udp get-variable-bindings)))
+;
+;(defn snmp-get-next [version host community & oids]
+;  (let [oids (vec oids)
+;        get-fn (open-line host community :pdu-type :get-next-request :version version)]
+;    (-> (get-fn :oids oids) process-udp get-variable-bindings)))
+;
+;(defn snmp-bulk-get [version host community & oids]
+;  (let [oids (vec oids)
+;        get-fn (open-line {:host host :community community :pdu-type :get-bulk-request :version version})]
+;    (-> (get-fn :oids oids) process-udp get-variable-bindings)))
+
+#_(defn snmp-get-first
   "Returns first valid found value of oids input
   argumetns."
   ([version host community & oids]
@@ -106,7 +187,7 @@
            get-fn (open-line host community :pdu-type :get-next-request :version version)
            transmition-fn (fn [oids]
                             (let [ld (get-fn :oids oids)
-                                  p (generate-udp-packet (snmp-encode (:message ld)) host)]
+                                  p (generate-udp-packet (snmp-encode BERCoder (:message ld)) host)]
                               (get-variable-bindings (send-sync client p))))
            valid-oids (fn [results oids]
                         (let [get-key #(apply key %)]
@@ -135,10 +216,6 @@
          (finally (.close client)))))))
 
 
-(defn snmp-bulk-get [version host community & oids]
-  (let [oids (vec oids)
-        get-fn (open-line {:host host :community community :pdu-type :get-bulk-request :version version})]
-    (-> (get-fn :oids oids) process-udp get-variable-bindings)))
 
 
 ;; Walking functions
@@ -160,6 +237,7 @@
                        (some #(is-child-of-oid? vb-oid %) oids)))
                    (send-fn [oid]
                      (.send c (generate-udp-packet (snmp-encode
+                                                     BERCoder
                                                      (:message
                                                        (bulk-fn :oids [oid]))) host)))
                    (receive-fn []
@@ -167,7 +245,7 @@
                        (.receive c p)
                        {:host (.getHostAddress (.getAddress p))
                         :port (.getPort p)
-                        :message (snmp-decode (.getData p))}))]
+                        :message (snmp-decode BERCoder (.getData p))}))]
              (doseq [x oids] (send-fn x))
              (loop [r []]
                (let [p (receive-fn)
@@ -194,6 +272,7 @@
                        (some #(is-child-of-oid? vb-oid %) oids)))
                    (send-fn [oid]
                      (.send c (generate-udp-packet (snmp-encode
+                                                     BERCoder
                                                      (:message
                                                        (next-fn :oids [oid]))) host)))
                    (receive-fn []
@@ -201,7 +280,7 @@
                        (.receive c p)
                        {:host (.getHostAddress (.getAddress p))
                         :port (.getPort p)
-                        :message (snmp-decode (.getData p))}))]
+                        :message (snmp-decode BERCoder (.getData p))}))]
              (doseq [x oids] (send-fn x))
              (loop [r []]
                (let [p (receive-fn)
@@ -233,7 +312,7 @@
       (letfn [(send-fn [{m :message h :host}]
                 (when-not (.isClosed c)
                   (try
-                    (let [p (generate-udp-packet (snmp-encode m) h)]
+                    (let [p (generate-udp-packet (snmp-encode BERCoder m) h)]
                       (.send c p))
                     (catch Exception e
                       (println "Couldn't generate and send udp-packet to host " h "\nPACKET:\n" (pr-str m))))))
@@ -243,7 +322,7 @@
                     (.receive c p)
                     {:host (.getHostAddress (.getAddress p))
                      :port (.getPort p)
-                     :message (snmp-decode (.getData p))})
+                     :message (snmp-decode BERCoder (.getData p))})
                   (catch SocketTimeoutException e nil)
                   (catch SocketException e nil)))]
         (try
@@ -258,13 +337,13 @@
           (catch Exception e (do
                                (.printStackTrace e))))))))
 
-#_(defn shout-some [hosts & {:keys [timeout oids community version send-interval timeout port pdu-type]
+#_(defn shout-some [hosts & {:keys [timeout oids community version send-interval timeout port pdu-type]}
                            :or {timeout *timeout*
                                 community "public"
                                 port 161
                                 pdu-type :get-next-request
                                 send-interval 2}
-                           :as receiver-options}]
+                           :as receiver-options]
   (let [receiver-options (if (:oids receiver-options) receiver-options
                            (assoc receiver-options :oids [[1 3 6 1 2 1 1 2 0] [1 3 6 1 2 1 1 5 0] [1 3 6 1 2 1 1 6 0] [1 3 6 1 2 1 47 1 1 1 1 11 1] [1 3 6 1 2 1 1 3 0]]))]
     (when (coll? hosts)
@@ -275,7 +354,7 @@
           (letfn [(send-fn [{m :message h :host}]
                     (when-not (.isClosed c)
                       (try
-                        (let [p (generate-udp-packet (snmp-encode m) h)]
+                        (let [p (generate-udp-packet (snmp-encode BERCoder m) h)]
                           (.send c p))
                         (catch Exception e
                           (do
@@ -286,7 +365,7 @@
                       (.receive c p)
                       {:host (.getHostAddress (.getAddress p))
                        :port (.getPort p)
-                       :message (snmp-decode (.getData p))}))]
+                       :message (snmp-decode BERCoder (.getData p))}))]
             (try
               (doseq [x packets]
                 (send-fn x))

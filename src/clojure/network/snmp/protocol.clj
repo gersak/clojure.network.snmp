@@ -8,10 +8,28 @@
 ;; Arhitecture is based on RFC 3412
 ;; http://www.ietf.org/rfc/rfc3412.txt?number=3412
 
+(defprotocol SNMPCoderProtocol
+  (snmp-encode [this message] "Returns encoded message as byte-array that is ready to be sent to host(s).")
+  (snmp-decode [this message] "Returns decoded message as byte-array that is ready to be sent to host(s)."))
 
-(defprotocol SNMPChannel
-  (encode [this data])
-  (decode [this data]))
+(defprotocol SNMPSocketProtocol
+  (closed? [this] "Returns true if line closed?")
+  (close [this] "Returns true if line is closed")
+  (connect [this target-socket] [this ] "Connects to remote target-socket")
+  (get-host [this] "Returns host to whom line is opened to")
+  (get-port [this] "Returns port of target host")
+  (send-over-line [this message] "Sends message to remote hosts and returns VariableBindings"))
+
+(defprotocol RIDStoreProtocol
+  (create-rid [this] [this data] "Function returns request ID. It should store RID, so that it can be verified. Data is optional context for rid creation.")
+  (verify-rid [this rid] [this rid data] "Function returns true if RID is verified. Also if RID is verified. Data is optional for context of received rid.")
+  (pending-rids [this] "Returns pending RIDs."))
+
+(defprotocol SNMPLineProtocol
+  (send-oids [this oids] "Used for sending OIDs to remote host. Return result are variable bindings."))
+
+;(defrecord SNMPSocket [host port])
+
 
 (def snmp-version {:v1 0
                    :v2c 1
@@ -120,13 +138,7 @@
 
 (defmethod decompose-snmp-response 3 [snmp-packet-tree]
   (let [version (-> snmp-packet-tree :value first :value)]
-    {:version version
-     :community community
-     :pdu {:type (:type pdu)
-           :rid (-> pdu :value first :value)
-           :error-type (get error-type (-> pdu :value (nth 1) :value))
-           :error-index (-> pdu :value (nth 2) :value)
-           :variable-bindings (-> pdu :value (nth 3) :value)}}))
+    {:version version}))
 
 (load "protocol/utils")
 (load "protocol/message_processing")

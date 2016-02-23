@@ -6,7 +6,10 @@
            [java.util Date])
   (:require
     [clojure.network.snmp.coders.ber :refer :all]
+    [clojure.network.snmp.protocol :refer [snmp-encode
+                                           snmp-decode]]
     [clojure.set :refer (difference map-invert)]))
+
 
 (def snmp-pdu-type
   {:get-request -96
@@ -37,8 +40,6 @@
 
 (def snmp-headers (conj snmp-variables snmp-pdu-type))
 
-(declare snmp-construct-decode snmp-construct-encode)
-
 (def ber-hi-limit (reduce * (repeat 32 2)))
 
 ;; Here are defined functions that encode SNMP values to their byte value
@@ -52,15 +53,15 @@
    :Timeticks (fn [x] (int2ber (min x ber-hi-limit)))
    :Gauge32 (fn [x] (int2ber (min x ber-hi-limit)))
    :noSuchInstance (fn [_] (byte-array (map byte [-127 0])))
-   :sequence snmp-construct-encode
-   :get-request snmp-construct-encode
-   :get-next-request snmp-construct-encode
-   :response snmp-construct-encode
-   :get-bulk-request snmp-construct-encode
-   :trap snmp-construct-encode
-   :report snmp-construct-encode
-   :set-request snmp-construct-encode
-   :inform-request snmp-construct-encode})
+   :sequence snmp-encode
+   :get-request snmp-encode
+   :get-next-request snmp-encode
+   :response snmp-encode
+   :get-bulk-request snmp-encode
+   :trap snmp-encode
+   :reports snmp-encode
+   :set-request snmp-encode
+   :inform-request snmp-encode})
 
 ;; Here are defined functions that decode byte values to their SNMP values
 (def snmp-decodings
@@ -73,40 +74,48 @@
    :Timeticks (fn [x] (ber2int x))
    :Gauge32 (fn [x] (ber2int x))
    :noSuchInstance (fn [_] nil)
-   :sequence 'snmp-construct-decode
-   :get-request 'snmp-construct-decode
-   :set-request 'snmp-construct-decode
-   :response 'snmp-construct-decode
-   :get-next-request 'snmp-construct-decode
-   :get-bulk-request 'snmp-construct-decode
-   :trap 'snmp-construct-decode
-   :report 'snmp-construct-decode
-   :inform-request 'snmp-construct-decode})
+   :sequence 'snmp-decode
+   :get-request 'snmp-decode
+   :set-request 'snmp-decode
+   :response 'snmp-decode
+   :get-next-request 'snmp-decode
+   :get-bulk-request 'snmp-decode
+   :trap 'snmp-decode
+   :report 'snmp-decode
+   :inform-request 'snmp-decode})
 
-(defn snmp-construct-decode [v]
-  (loop [s v
-         values []]
-    (if (empty? s) values
-      (let [u (BERUnit. s)]
-        (when-let [t (get (map-invert snmp-headers) (.header u))]
-          (let [ [v1 r1] [(.value u) (drop (count (.bytes u)) s)]]
-            (if (bit-test (.header u) 5)
-              (recur (byte-array r1) (conj values {:type t :value (snmp-construct-decode v1)}))
-              (recur (byte-array r1) (conj values {:type t :value ((t snmp-decodings) v1)})))))))))
+(def construct? (conj (set (keys snmp-pdu-type)) :sequence))
 
-(defn snmp-encode [v]
-  (let [t (:type v)]
-    (if (bit-test (t snmp-headers) 5)
-      (. (BERUnit. (t snmp-headers) (byte-array (reduce concat (for [x (:value v)] (snmp-encode x))))) bytes)
-      (if (and (not= :Null t) (not= :noSuchInstance t))
-        (. (BERUnit. (t snmp-headers) ((t snmp-encodings) (:value v))) bytes)
-        ((t snmp-encodings) (:value v))))))
-
-(defn snmp-construct-encode [v]
-  (byte-array (reduce concat (for [x v] (snmp-encode x)))))
-
-(defn snmp-decode [#^bytes v]
-  (let [u (BERUnit. v)
-        t (get (map-invert snmp-headers) (.header u))
-        nv ((ns-resolve 'clojure.network.snmp.coders.snmp (symbol (get snmp-decodings t))) (.value u))]
-    {:type t :value nv}))
+(def BERCoder
+  (reify clojure.network.snmp.protocol.SNMPCoderProtocol
+    (snmp-encode [this v]
+      (let [t (:type v)]
+        (if (bit-test (t snmp-headers) 5)
+          (.bytes (BERUnit. (t snmp-headers) (byte-array (reduce concat (for [x (:value v)] (snmp-encode this x))))))
+          (if (and (not= :Null t) (not= :noSuchInstance t))
+            (.bytes (BERUnit. (t snmp-headers) ((t snmp-encodings) (:value v))))
+            ((t snmp-encodings) (:value v))))))
+    (snmp-decode [this v]
+      (let [u (BERUnit. v)
+            original-type (get (map-invert snmp-headers) (.header u))]
+        (if (bit-test (.header u) 5)
+          ;; Check if it is a construct
+          (loop [s (.value u)
+                 values []]
+            ;; If true loop for each value in this construct
+            (if (empty? s) {:type original-type :value values}
+              ;; Make new unit
+              (let [u (BERUnit. s)]
+                ;; Get unit type
+                (when-let [t (get (map-invert snmp-headers) (.header u))]
+                  ;; Separate unit value from rest of the sequences of cunstruct
+                  (let [[v1 r1] [(.value u) (drop (count (.bytes u)) s)]]
+                    ;; Test if unit itself is construct
+                    (if (bit-test (.header u) 5)
+                      ;; If it is then snmp-decode itself recursive and return rest of seq to
+                      ;; resolution
+                      (recur (byte-array r1) (conj values (snmp-decode this s)))
+                      ;; If not then return concrete value and move forward with resolution
+                      (recur (byte-array r1) (conj values {:type t :value ((t snmp-decodings) v1)}))))))))
+          (let [nv {:type original-type :value ((original-type snmp-decodings) v)}]
+            {:type original-type :value nv}))))))

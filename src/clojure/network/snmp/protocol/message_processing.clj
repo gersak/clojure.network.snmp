@@ -1,7 +1,6 @@
-(in-ns 'clojure.network.snmp.coders.snmp)
+(in-ns 'clojure.network.snmp.protocol)
 ;; RFC 3412
 ;; Section .5
-
 
 (def rid-range [10000 500000])
 
@@ -57,23 +56,19 @@
         version (or version :v2c)
         port (or port 161)]
     (fn [& {:keys [rid oids] :or {rid (generate-request-id)}}]
-      {:message {:type :sequence
-                 :value [{:type :Integer :value 0}
-                         {:type :OctetString :value community}
-                         ((bind-request-type options) rid oids)]}
-       :host host
-       :port port})))
+      {:type :sequence
+       :value [{:type :Integer :value 0}
+               {:type :OctetString :value community}
+               ((bind-request-type options) rid oids)]})))
 
 (defmethod open-line :v2c [{:keys [host community pdu-type port] :as options}]
   (let [pdu-type (or pdu-type :get-bulk-request)
         port (or port 161)]
     (fn [& {:keys [rid oids] :or {rid (generate-request-id)}}]
-      {:message {:type :sequence
-                 :value [{:type :Integer :value 1}
-                         {:type :OctetString :value community}
-                         ((bind-request-type options) rid oids)]}
-       :host host
-       :port port})))
+      {:type :sequence
+       :value [{:type :Integer :value 1}
+               {:type :OctetString :value community}
+               ((bind-request-type options) rid oids)]})))
 
 (defmethod open-line :v3 [{:keys [host
                                   community
