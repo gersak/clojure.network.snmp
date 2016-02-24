@@ -2,6 +2,44 @@
 ;; RFC 3412
 ;; Section .5
 
+(defn decompose-resolver [snmp-packet-tree]
+  (-> snmp-packet-tree :value first :value))
+
+(defmulti decompose-snmp-response decompose-resolver)
+
+(defmethod decompose-snmp-response :default [_]
+  (throw (Exception. "Unknown SNMP packet receivied")))
+
+(defmethod decompose-snmp-response 0 [snmp-packet-tree]
+  (let [version (-> snmp-packet-tree :value first :value)
+        community (-> snmp-packet-tree :value second :value)
+        pdu (-> snmp-packet-tree :value (nth 2))]
+    {:version version
+     :community community
+     :pdu {:type (:type pdu)
+           :rid (-> pdu :value first :value)
+           :error-type (get error-type (-> pdu :value (nth 1) :value))
+           :error-index (-> pdu :value (nth 2) :value)
+           :variable-bindings (-> pdu :value (nth 3) :value vb2data)}}))
+
+(defmethod decompose-snmp-response 1 [snmp-packet-tree]
+  (let [version (-> snmp-packet-tree :value first :value)
+        community (-> snmp-packet-tree :value second :value)
+        pdu (-> snmp-packet-tree :value (nth 2))]
+    {:version version
+     :community community
+     :pdu {:type (:type pdu)
+           :rid (-> pdu :value first :value)
+           :error-type (get error-type (-> pdu :value (nth 1) :value))
+           :error-index (-> pdu :value (nth 2) :value)
+           :variable-bindings (-> pdu :value (nth 3) :value vb2data)}}))
+
+(defmethod decompose-snmp-response 3 [snmp-packet-tree]
+  (let [version (-> snmp-packet-tree :value first :value)]
+    {:version version}))
+
+
+
 (def rid-range [10000 500000])
 
 (defn generate-request-id [] (+ 10000 (rand-int 400000)))
@@ -37,7 +75,7 @@
     ({"v1" :v1 "v2c" :v2c "v3" :v3} version)))
 
 
-(defmulti open-line
+(defmulti bootstrap-line
   "Function returns a function that will genarate
   snmp requests based on community, host and request type.
   Only OID value can vary.
@@ -48,20 +86,29 @@
   :port \"any\""
   open-line-resolver)
 
-(defmethod open-line :default [{:keys [version]}]
+(defmethod bootstrap-line :default [{:keys [version]}]
   (throw (Exception. (str "Unknown SNMP version: " version))))
 
-(defmethod open-line :v1 [{:keys [host community pdu-type version port] :as options}]
-  (let [pdu-type (or pdu-type :get-bulk-request)
-        version (or version :v2c)
-        port (or port 161)]
-    (fn [& {:keys [rid oids] :or {rid (generate-request-id)}}]
-      {:type :sequence
-       :value [{:type :Integer :value 0}
-               {:type :OctetString :value community}
-               ((bind-request-type options) rid oids)]})))
+(defmethod bootstrap-line :v1 [{:keys [community pdu-type connection rid-store] :as options}]
+  (fn [& oids]
+    (let [rid (create-rid rid-store oids)
+          returned-packet (->
+                            {:type :sequence
+                             :value [{:type :Integer :value 0}
+                                     {:type :OctetString :value community}
+                                     ((bind-request-type options) rid oids)]}
+                            ((partial send-over-line connection))
+                            decompose-snmp-response)
+          response-rid (-> returned-packet :pdu :rid)]
+      (if-not (verify-rid rid-store response-rid)
+        (throw (Exception. "Request ID not found"))
+        (->
+          returned-packet
+          :variable-bindings)))))
 
-(defmethod open-line :v2c [{:keys [host community pdu-type port] :as options}]
+
+
+(defmethod bootstrap-line :v2c [{:keys [host community pdu-type port] :as options}]
   (let [pdu-type (or pdu-type :get-bulk-request)
         port (or port 161)]
     (fn [& {:keys [rid oids] :or {rid (generate-request-id)}}]
@@ -70,23 +117,23 @@
                {:type :OctetString :value community}
                ((bind-request-type options) rid oids)]})))
 
-(defmethod open-line :v3 [{:keys [host
-                                  community
-                                  port
-                                  pdu-type
-                                  security-model
-                                  security-name
-                                  security-level
-                                  context-engine-id
-                                  context-name
-                                  message-max-size
-                                  message-flags
-                                  message-security-model
-                                  message-id
-                                  message-security-parameters]
-                           :or {port 161
-                                version 1}
-                           :as options}]
+(defmethod bootstrap-line :v3 [{:keys [host
+                                       community
+                                       port
+                                       pdu-type
+                                       security-model
+                                       security-name
+                                       security-level
+                                       context-engine-id
+                                       context-name
+                                       message-max-size
+                                       message-flags
+                                       message-security-model
+                                       message-id
+                                       message-security-parameters]
+                                :or {port 161
+                                     version 1}
+                                :as options}]
   (let [{:keys [message-authoritive-engine-id
                 message-authoritive-engine-boots
                 message-authoritive-engine-time

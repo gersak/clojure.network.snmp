@@ -22,11 +22,11 @@
                     :else (:value x)))]
     (for [x (map #(:value %) variable-bindings)] {(:value (first x)) (hf (second x))})))
 
-(defn get-variable-bindings [response]
-  (-> response :message decompose-snmp-response :pdu :variable-bindings vb2data))
-
-(defn get-rid [response]
-  (-> response :message decompose-snmp-response :pdu :rid))
+;(defn get-variable-bindings [response]
+;  (-> response :message decompose-snmp-response :pdu :variable-bindings vb2data)
+;
+;(defn get-rid [response]
+;  (-> response :message decompose-snmp-response :pdu :rid))
 
 ;; Following are functions for easier request interchange
 (defn tabelize-fix-length

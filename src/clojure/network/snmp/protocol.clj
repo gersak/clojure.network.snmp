@@ -104,41 +104,5 @@
            {:type :Integer :value (or (:max-repetitions options) 300)}
            {:type :sequence :value (get-oids-map oids)}]})
 
-(defn decompose-resolver [snmp-packet-tree]
-  (-> snmp-packet-tree :value first :value))
-
-(defmulti decompose-snmp-response decompose-resolver)
-
-(defmethod decompose-snmp-response :default [_]
-  (throw (Exception. "Unknown SNMP packet receivied")))
-
-(defmethod decompose-snmp-response 0 [snmp-packet-tree]
-  (let [version (-> snmp-packet-tree :value first :value)
-        community (-> snmp-packet-tree :value second :value)
-        pdu (-> snmp-packet-tree :value (nth 2))]
-    {:version version
-     :community community
-     :pdu {:type (:type pdu)
-           :rid (-> pdu :value first :value)
-           :error-type (get error-type (-> pdu :value (nth 1) :value))
-           :error-index (-> pdu :value (nth 2) :value)
-           :variable-bindings (-> pdu :value (nth 3) :value)}}))
-
-(defmethod decompose-snmp-response 1 [snmp-packet-tree]
-  (let [version (-> snmp-packet-tree :value first :value)
-        community (-> snmp-packet-tree :value second :value)
-        pdu (-> snmp-packet-tree :value (nth 2))]
-    {:version version
-     :community community
-     :pdu {:type (:type pdu)
-           :rid (-> pdu :value first :value)
-           :error-type (get error-type (-> pdu :value (nth 1) :value))
-           :error-index (-> pdu :value (nth 2) :value)
-           :variable-bindings (-> pdu :value (nth 3) :value)}}))
-
-(defmethod decompose-snmp-response 3 [snmp-packet-tree]
-  (let [version (-> snmp-packet-tree :value first :value)]
-    {:version version}))
-
 (load "protocol/utils")
 (load "protocol/message_processing")

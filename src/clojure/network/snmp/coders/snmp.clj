@@ -84,8 +84,6 @@
    :report 'snmp-decode
    :inform-request 'snmp-decode})
 
-(def construct? (conj (set (keys snmp-pdu-type)) :sequence))
-
 (def BERCoder
   (reify clojure.network.snmp.protocol.SNMPCoderProtocol
     (snmp-encode [this v]
