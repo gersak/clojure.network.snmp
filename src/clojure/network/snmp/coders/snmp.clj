@@ -84,7 +84,7 @@
    :report 'snmp-decode
    :inform-request 'snmp-decode})
 
-(def BERCoder
+(defn make-ber-coder []
   (reify clojure.network.snmp.protocol.SNMPCoderProtocol
     (snmp-encode [this v]
       (let [t (:type v)]
@@ -117,3 +117,6 @@
                       (recur (byte-array r1) (conj values {:type t :value ((t snmp-decodings) v1)}))))))))
           (let [nv {:type original-type :value ((original-type snmp-decodings) v)}]
             {:type original-type :value nv}))))))
+
+(def BERCoder
+  (make-ber-coder))

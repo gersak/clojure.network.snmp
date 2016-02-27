@@ -11,22 +11,17 @@
                     :else (apply str (:value x))))]
     (reduce conj (for [x (map #(:value %) variable-bindings)] (hash-map (:value (first x)) (hf (second x)))))))
 
-(defn- vb2data [variable-bindings]
-  (assert (every? #(= :sequence %) (map :type variable-bindings)) "There is something wrong with input parameter. Not every variable binding is of SNMP :sequence type.")
-  (letfn [(hf [x] (cond
-                    (= :IpAddress (:type x)) (apply str (interpose "." (:value x)))
-                    (= :Timeticks (:type x)) (:value x) ;;(Date. (long (:value x)))
-                    (or (instance? BigInteger (:value x)) (instance? clojure.lang.BigInt (:value x))) (.longValue (:value x))
-                    (every? string? (:value x)) (apply str  (interpose "."  (map #(apply str %) (partition 2 (:value x)))))
-                    (= :noSuchInstance (:type x)) :noSuchInstance
+(defn vb2data [variable-bindings]
+  (let [variable-bindings (take-while (comp not nil?) variable-bindings)]
+    (assert (every? #(= :sequence %) (map :type variable-bindings)) "There is something wrong with input parameter. Not every variable binding is of SNMP :sequence type.")
+    (letfn [(hf [x] (cond
+                      (= :IpAddress (:type x)) (apply str (interpose "." (:value x)))
+                      (= :Timeticks (:type x)) (:value x) ;;(Date. (long (:value x)))
+                      (or (instance? BigInteger (:value x)) (instance? clojure.lang.BigInt (:value x))) (.longValue (:value x))
+                      (every? string? (:value x)) (apply str  (interpose "."  (map #(apply str %) (partition 2 (:value x)))))
+                      (= :noSuchInstance (:type x)) :noSuchInstance
                     :else (:value x)))]
-    (for [x (map #(:value %) variable-bindings)] {(:value (first x)) (hf (second x))})))
-
-;(defn get-variable-bindings [response]
-;  (-> response :message decompose-snmp-response :pdu :variable-bindings vb2data)
-;
-;(defn get-rid [response]
-;  (-> response :message decompose-snmp-response :pdu :rid))
+    (for [x (map #(:value %) variable-bindings)] {(:value (first x)) (hf (second x))}))))
 
 ;; Following are functions for easier request interchange
 (defn tabelize-fix-length
