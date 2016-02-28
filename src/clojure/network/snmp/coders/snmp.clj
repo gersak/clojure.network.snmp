@@ -1,7 +1,6 @@
 (ns clojure.network.snmp.coders.snmp
   (:import [java.io OutputStream FileOutputStream]
            [java.nio.channels Channels]
-           [java.nio ByteBuffer Buffer ByteOrder]
            [ber BERUnit]
            [java.util Date])
   (:require

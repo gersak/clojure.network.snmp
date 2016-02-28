@@ -19,9 +19,9 @@
                       (= :Timeticks (:type x)) (:value x) ;;(Date. (long (:value x)))
                       (or (instance? BigInteger (:value x)) (instance? clojure.lang.BigInt (:value x))) (.longValue (:value x))
                       (every? string? (:value x)) (apply str  (interpose "."  (map #(apply str %) (partition 2 (:value x)))))
-                      (= :noSuchInstance (:type x)) :noSuchInstance
-                    :else (:value x)))]
-    (for [x (map #(:value %) variable-bindings)] {(:value (first x)) (hf (second x))}))))
+                      (= :noSuchInstance (:type x)) :noSuchInstance)
+              :else (:value x))]
+      (for [x (map #(:value %) variable-bindings)] (->VariableBinding (:value (first x)) (hf (second x)))))))
 
 ;; Following are functions for easier request interchange
 (defn tabelize-fix-length
