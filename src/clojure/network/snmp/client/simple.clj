@@ -19,6 +19,21 @@
 (defn- get-variable-bindings "TODO" [& args] )
 (defn- snmp-template "TODO" [& args] )
 
+(defn- get-oid-vector
+  [oid]
+  (if (vector? oid)
+    oid
+    (->> (clojure.string/split oid #"\.")
+         (map clojure.string/trim)
+         (map util/parse-int)
+         (filter some?)
+         (into []))))
+
+(defn- get-oid-vectors
+  [oids]
+  (->> (map get-oid-vector oids)
+       (into [])))
+
 (defn- make-udp-socket
   ([& {:keys [timeout port] :or {timeout *timeout*}}]
    (if port
@@ -74,10 +89,12 @@
                                :community community
                                :version version
                                :port port))
-        {host_ :host response :message} (process-udp {:host host
+        oids (get-oid-vectors oids)
+
+        {host_ :host response :message} (process-udp {:host    host
                                                       :timeout timeout
                                                       :message (s/encode line {:oids oids})
-                                                      :port port})]
+                                                      :port    port})]
     (s/decode line response)))
 
 
