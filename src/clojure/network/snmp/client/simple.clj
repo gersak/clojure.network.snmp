@@ -59,8 +59,8 @@
      :message (.getData rp)}))
 
 (defn- process-udp [{:keys [message host port timeout]
-                      :as prepared-packet
-                      :or {port 161 timeout *timeout*}}]
+                     :as prepared-packet
+                     :or {port 161 timeout *timeout*}}]
   (when-let [client (make-udp-socket :timeout timeout)]
     (try
       (let [packet (generate-udp-packet message host)]
