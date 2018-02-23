@@ -66,13 +66,13 @@
 ;; Usable functions
 
 (defn snmp-get [& {:keys [host community timeout oids port version]
-                   :or {timeout *timeout*
-                        port 161
-                        host "localhost"
-                        community "public"
-                        version :v2c
-                        oids [[1 3 6 1 2 1 1 1 0]]}
-                   :as options}]
+                   :or   {timeout   *timeout*
+                          port      161
+                          host      "localhost"
+                          community "public"
+                          version   :v2c
+                          oids      [[1 3 6 1 2 1 1 1 0]]}
+                   :as   options}]
   (let [line (open-line (assoc options
                                :pdu-type :get-request
                                :community community
