@@ -1,19 +1,15 @@
 (ns clojure.network.snmp.client.simple
-  (:require
-    [clojure.core.async :as a :refer [go <!! <! go-loop take! put! alts!! chan]]
-    [clojure.network.snmp
-     [protocol :as s :refer [is-child-of-oid?
-                             open-line
-                             generate-request-id
-                             make-table]]])
-  (:import
-    [java.net
-     SocketTimeoutException
-     SocketException
-     InetAddress
-     DatagramPacket
-     DatagramSocket]
-    [ber BERUnit]))
+  (:require [clojure.core.async :as a :refer [go <!! <! go-loop take! put! alts!! chan]]
+            [clojure.network.snmp.protocol :as s :refer [is-child-of-oid? open-line
+                                                         generate-request-id make-table]]
+            [clojure.network.snmp.coders.snmp :as coders]
+            [clojure.network.snmp.utils :as util])
+  (:import (java.net SocketTimeoutException
+                     SocketException
+                     InetAddress
+                     DatagramPacket
+                     DatagramSocket)
+           (ber BERUnit)))
 
 
 (def ^{:dynamic true} *timeout* 2000)
